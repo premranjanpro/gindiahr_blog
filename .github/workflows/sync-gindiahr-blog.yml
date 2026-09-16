@@ -1,6 +1,10 @@
 name: Sync GIndiaHR Blog Archive
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/workflows/sync-gindiahr-blog.yml'
   workflow_dispatch:
   schedule:
     - cron: '17 3 * * *'
@@ -21,7 +25,6 @@ jobs:
         run: |
           python - <<'PY'
           import json, os, pathlib, re, urllib.request
-
           req = urllib.request.Request(os.environ['SOURCE_API'], headers={'User-Agent':'gindiahr-blog-sync'})
           items = json.load(urllib.request.urlopen(req))
           root = pathlib.Path('.')
@@ -30,10 +33,7 @@ jobs:
               name = item.get('name','')
               if item.get('type') != 'file' or not name.endswith('.html') or name == 'index.html':
                   continue
-              url = item['download_url']
-              data = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent':'gindiahr-blog-sync'})).read().decode('utf-8')
-
-              # Move the article identity from www.gindiahr.com/blog/* to blog.gindiahr.com/*.
+              data = urllib.request.urlopen(urllib.request.Request(item['download_url'], headers={'User-Agent':'gindiahr-blog-sync'})).read().decode('utf-8')
               data = data.replace('https://www.gindiahr.com/blog/', 'https://blog.gindiahr.com/')
               data = data.replace('https://gindiahr.com/blog/', 'https://blog.gindiahr.com/')
               data = data.replace('href="../images/', 'href="https://www.gindiahr.com/images/')
@@ -45,29 +45,21 @@ jobs:
               data = data.replace('href="index.html"', 'href="https://blog.gindiahr.com/"')
               data = data.replace('href="/blog/', 'href="https://blog.gindiahr.com/')
               data = data.replace('https://blog.gindiahr.com/blog/', 'https://blog.gindiahr.com/')
-
-              # Ensure canonical points at the new subdomain when an old canonical exists.
               data = re.sub(r'<link\s+rel="canonical"\s+href="[^"]+">', f'<link rel="canonical" href="https://blog.gindiahr.com/{name}">', data, count=1, flags=re.I)
-
               (root / name).write_text(data, encoding='utf-8')
               count += 1
           print(f'Synced {count} legacy blog pages')
           PY
 
-      - name: Refresh sitemap for legacy pages
+      - name: Refresh sitemap for all article pages
         run: |
           python - <<'PY'
           import pathlib, re
-          p = pathlib.Path('sitemap.xml')
           urls = []
-          if p.exists():
-              old = p.read_text(encoding='utf-8')
-              urls = re.findall(r'<loc>(https://blog\.gindiahr\.com/[^<]+)</loc>', old)
+          p = pathlib.Path('sitemap.xml')
+          if p.exists(): urls = re.findall(r'<loc>(https://blog\.gindiahr\.com/[^<]+)</loc>', p.read_text(encoding='utf-8'))
           for f in sorted(pathlib.Path('.').glob('*.html')):
-              if f.name == 'index.html':
-                  continue
-              u = 'https://blog.gindiahr.com/' + f.name
-              if u not in urls: urls.append(u)
+              if f.name != 'index.html': urls.append('https://blog.gindiahr.com/' + f.name)
           body = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + ''.join(f'  <url><loc>{u}</loc></url>\n' for u in sorted(set(urls))) + '</urlset>\n'
           p.write_text(body, encoding='utf-8')
           PY
