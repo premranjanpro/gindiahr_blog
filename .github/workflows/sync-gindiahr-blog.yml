@@ -1,0 +1,81 @@
+name: Sync GIndiaHR Blog Archive
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout blog site
+        uses: actions/checkout@v4
+
+      - name: Import legacy GIndiaHR blog pages
+        env:
+          SOURCE_API: https://api.github.com/repos/premranjanpro/gindiahr/contents/blog?ref=main
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, re, urllib.request
+
+          req = urllib.request.Request(os.environ['SOURCE_API'], headers={'User-Agent':'gindiahr-blog-sync'})
+          items = json.load(urllib.request.urlopen(req))
+          root = pathlib.Path('.')
+          count = 0
+          for item in items:
+              name = item.get('name','')
+              if item.get('type') != 'file' or not name.endswith('.html') or name == 'index.html':
+                  continue
+              url = item['download_url']
+              data = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent':'gindiahr-blog-sync'})).read().decode('utf-8')
+
+              # Move the article identity from www.gindiahr.com/blog/* to blog.gindiahr.com/*.
+              data = data.replace('https://www.gindiahr.com/blog/', 'https://blog.gindiahr.com/')
+              data = data.replace('https://gindiahr.com/blog/', 'https://blog.gindiahr.com/')
+              data = data.replace('href="../images/', 'href="https://www.gindiahr.com/images/')
+              data = data.replace('src="../images/', 'src="https://www.gindiahr.com/images/')
+              data = data.replace('href="../favicon.png"', 'href="https://www.gindiahr.com/favicon.png"')
+              data = data.replace('href="../"', 'href="https://gindiahr.com/"')
+              data = data.replace('href="../about.html"', 'href="https://gindiahr.com/about.html"')
+              data = data.replace('href="../contact-us.html"', 'href="https://gindiahr.com/contact-us.html"')
+              data = data.replace('href="index.html"', 'href="https://blog.gindiahr.com/"')
+              data = data.replace('href="/blog/', 'href="https://blog.gindiahr.com/')
+              data = data.replace('https://blog.gindiahr.com/blog/', 'https://blog.gindiahr.com/')
+
+              # Ensure canonical points at the new subdomain when an old canonical exists.
+              data = re.sub(r'<link\s+rel="canonical"\s+href="[^"]+">', f'<link rel="canonical" href="https://blog.gindiahr.com/{name}">', data, count=1, flags=re.I)
+
+              (root / name).write_text(data, encoding='utf-8')
+              count += 1
+          print(f'Synced {count} legacy blog pages')
+          PY
+
+      - name: Refresh sitemap for legacy pages
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path('sitemap.xml')
+          urls = []
+          if p.exists():
+              old = p.read_text(encoding='utf-8')
+              urls = re.findall(r'<loc>(https://blog\.gindiahr\.com/[^<]+)</loc>', old)
+          for f in sorted(pathlib.Path('.').glob('*.html')):
+              if f.name == 'index.html':
+                  continue
+              u = 'https://blog.gindiahr.com/' + f.name
+              if u not in urls: urls.append(u)
+          body = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + ''.join(f'  <url><loc>{u}</loc></url>\n' for u in sorted(set(urls))) + '</urlset>\n'
+          p.write_text(body, encoding='utf-8')
+          PY
+
+      - name: Commit synced pages
+        run: |
+          git config user.name 'gindiahr-blog-sync[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .
+          git diff --cached --quiet || git commit -m 'chore: sync GIndiaHR legacy blog archive [skip ci]'
+          git push
